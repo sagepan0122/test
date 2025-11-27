@@ -17,6 +17,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      ROLLUP_SKIP_NODEJS_NATIVE: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,8 +34,6 @@ jobs:
 
       - name: Build
         run: npm run build
-        env:
-          ROLLUP_SKIP_NODEJS_NATIVE: '1'
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
