@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { FormEvent, PointerEvent as ReactPointerEvent } from 'react'
 import './App.css'
 
 const envTaskIcon = import.meta.env.VITE_TASK_ICON_URL
@@ -33,20 +33,40 @@ type ScheduleItem = {
   id: string
   title: string
   remindDateISO: string
+  createdAtISO: string
   templateId?: string
   iconKey?: IconKey
+  muted?: boolean
 }
 
-type PetTab = {
+type PetGender = 'male' | 'female' | 'unknown'
+
+type PetProfile = {
   id: string
   label: string
+  birthdayISO?: string
+  ageYears?: number
+  gender?: PetGender
 }
+
+type PetCenterPanel = 'info' | 'history'
+
+const petCenterPanels: { id: PetCenterPanel; label: string }[] = [
+  { id: 'info', label: '基础信息' },
+  { id: 'history', label: '历程' },
+]
+
+const genderOptions: { value: PetGender; label: string }[] = [
+  { value: 'unknown', label: '未设置' },
+  { value: 'male', label: '男孩' },
+  { value: 'female', label: '女孩' },
+]
 
 type ModalMode = 'schedule' | 'pet' | null
 
 const PET_NAME_MAX = 8
 const HAS_PET_FLAG = 'pet-reminder-has-pet'
-const PET_TIP_FLAG = 'pet-reminder-tip-dismissed'
+const BIRTHDAY_TEMPLATE_ID = 'pet-birthday-reminder'
 const LONG_PRESS_THRESHOLD_MS = 650
 
 const scheduleTemplates = [
@@ -57,26 +77,16 @@ const scheduleTemplates = [
   { id: 'play', label: '出去玩', verb: '和', action: '一起出去玩', iconKey: 'play' as const },
 ]
 
-const historyRecords: Record<string, Record<string, string[]>> = {
-  'pet-123': {
+const initialHistoryRecords: Record<string, Record<string, string[]>> = {
+  'pet-test1': {
     bath: ['2024-05-12', '2024-03-30', '2024-02-10'],
-    groom: ['2024-05-01', '2024-02-20'],
-    play: ['2024-06-01', '2024-04-18', '2024-04-05'],
     vaccine: ['2024-01-18', '2023-08-08'],
-    clinic: ['2023-12-09'],
   },
-  'pet-456': {
-    bath: ['2024-05-25', '2024-04-10'],
-    play: ['2024-05-28', '2024-05-02'],
-    clinic: ['2024-03-16', '2023-11-03'],
+  'pet-test2': {
+    clinic: ['2023-12-09', '2023-08-15'],
+    groom: ['2024-04-01'],
   },
 }
-
-const dayOptions = Array.from({ length: 7 }, (_, index) => ({
-  value: index + 1,
-  label: `${index + 1} 天后`,
-}))
-const longTermOptionValue = 'longer'
 
 const formatDateInput = (date: Date) =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
@@ -89,27 +99,144 @@ const parseISODate = (isoDate: string) => {
   return new Date(year, (month ?? 1) - 1, day ?? 1)
 }
 
-const clampDate = (source: Date) => {
-  const now = new Date()
+const toBeijingDate = (date: Date) => {
+  const utc = date.getTime() + date.getTimezoneOffset() * 60000
+  return new Date(utc + 8 * 60 * 60 * 1000)
+}
+
+const getBeijingNow = () => {
+  if (envDebugToday) {
+    const debug = parseISODate(envDebugToday)
+    return new Date(debug.getTime())
+  }
+  return toBeijingDate(new Date())
+}
+
+const getBeijingToday = () => {
+  const now = getBeijingNow()
   now.setHours(0, 0, 0, 0)
-  const max = new Date(now)
-  max.setDate(max.getDate() + 14)
+  return now
+}
+
+const clampDate = (source: Date) => {
+  const now = getBeijingToday()
   if (source < now) return now
-  if (source > max) return max
   return source
 }
 
-const initialPetTabs: PetTab[] = []
+const formatOffsetDate = (daysOffset: number) => {
+  const base = getBeijingToday()
+  base.setDate(base.getDate() + daysOffset)
+  return formatDateInput(base)
+}
 
-const initialSchedules: Record<string, ScheduleItem[]> = {}
+const computeInitialAgeYears = (birthdayISO: string) => {
+  const birthday = parseISODate(birthdayISO)
+  const today = getBeijingNow()
+  birthday.setHours(0, 0, 0, 0)
+  today.setHours(0, 0, 0, 0)
+  let years = today.getFullYear() - birthday.getFullYear()
+  const birthdayMonth = birthday.getMonth()
+  const birthdayDay = birthday.getDate()
+  const hasNotReachedBirthdayThisYear =
+    today.getMonth() < birthdayMonth ||
+    (today.getMonth() === birthdayMonth && today.getDate() < birthdayDay)
+  if (hasNotReachedBirthdayThisYear) {
+    years -= 1
+  }
+  return Math.max(years, 0)
+}
+
+function buildPet(id: string, label: string, options?: { birthday?: string; gender?: PetGender }) {
+  const profile: PetProfile = { id, label, gender: options?.gender ?? 'unknown' }
+  if (options?.birthday) {
+    profile.birthdayISO = options.birthday
+    profile.ageYears = computeInitialAgeYears(options.birthday)
+  }
+  return profile
+}
+
+const initialPetTabs: PetProfile[] = [
+  buildPet('pet-test1', '测试1', { birthday: '2021-03-15', gender: 'female' }),
+  buildPet('pet-test2', '测试2', { birthday: '2019-11-28', gender: 'male' }),
+]
+
+const initialSchedules: Record<string, ScheduleItem[]> = {
+  'pet-test1': [
+    {
+      id: 'task-test1-bath',
+      title: '带测试1去洗澡',
+      remindDateISO: formatOffsetDate(-3),
+      templateId: 'bath',
+      iconKey: 'bath',
+      createdAtISO: formatDateInput(getBeijingToday()),
+    },
+    {
+      id: 'task-test1-vaccine',
+      title: '带测试1去打疫苗',
+      remindDateISO: formatDateInput(
+        clampDate(new Date(getBeijingNow().getTime() + 30 * 24 * 60 * 60 * 1000)),
+      ),
+      templateId: 'vaccine',
+      iconKey: 'vaccine',
+      createdAtISO: formatDateInput(getBeijingToday()),
+    },
+  ],
+  'pet-test2': [
+    {
+      id: 'task-test2-clinic',
+      title: '带测试2去就诊',
+      remindDateISO: formatOffsetDate(-1),
+      templateId: 'clinic',
+      iconKey: 'clinic',
+      createdAtISO: formatDateInput(getBeijingToday()),
+    },
+    {
+      id: 'task-test2-groom',
+      title: '带测试2去做美容',
+      remindDateISO: formatOffsetDate(-2),
+      templateId: 'groom',
+      iconKey: 'snack',
+      createdAtISO: formatDateInput(getBeijingToday()),
+    },
+  ],
+}
+
+const getTemplateById = (id?: string) => scheduleTemplates.find((template) => template.id === id)
+
+const buildScheduleTitle = (templateId: string | undefined, petLabel: string, fallback: string) => {
+  if (!petLabel) return fallback
+  if (templateId === BIRTHDAY_TEMPLATE_ID) {
+    return `${petLabel}的生日提醒`
+  }
+  const template = getTemplateById(templateId)
+  if (!template) return fallback
+  return `${template.verb}${petLabel}${template.action}`
+}
+
+const getNextBirthdayISO = (birthdayISO: string, referenceDate?: Date) => {
+  if (!birthdayISO) return ''
+  const now = referenceDate ? new Date(referenceDate) : getBeijingNow()
+  now.setHours(0, 0, 0, 0)
+  const [, month, day] = birthdayISO.split('-').map(Number)
+  if (!month || !day) return ''
+  const candidate = new Date(now.getFullYear(), (month ?? 1) - 1, day ?? 1)
+  candidate.setHours(0, 0, 0, 0)
+  if (candidate <= now) {
+    candidate.setFullYear(candidate.getFullYear() + 1)
+  }
+  return formatDateInput(candidate)
+}
 
 type ScheduleCardProps = {
   item: ScheduleItem
   onComplete: () => void
   isRemoving: boolean
+  onLongPress: (event: ReactPointerEvent<HTMLElement>) => void
+  onPressCancel: () => void
 }
 
-function ScheduleCard({ item, onComplete, isRemoving }: ScheduleCardProps) {
+function ScheduleCard({ item, onComplete, isRemoving, onLongPress, onPressCancel }: ScheduleCardProps) {
   const [hasEntered, setHasEntered] = useState(false)
   useEffect(() => {
     const frame = requestAnimationFrame(() => setHasEntered(true))
@@ -123,14 +250,22 @@ function ScheduleCard({ item, onComplete, isRemoving }: ScheduleCardProps) {
       ? `还差${countdownDays}天`
       : countdownDays === 0
         ? '今天提醒'
-        : `已超${Math.abs(countdownDays)}天`
+        : `逾期${Math.abs(countdownDays)}天`
 
   const cardClassNames = ['schedule-card']
   if (hasEntered) cardClassNames.push('schedule-card--enter')
   if (isRemoving) cardClassNames.push('schedule-card--exit')
 
   return (
-    <article className={cardClassNames.join(' ')} role="listitem">
+    <article
+      className={cardClassNames.join(' ')}
+      role="listitem"
+      onPointerDown={onLongPress}
+      onPointerUp={onPressCancel}
+      onPointerLeave={onPressCancel}
+      onPointerCancel={onPressCancel}
+      onContextMenu={(event) => event.preventDefault()}
+    >
       <div className="schedule-card__icon" aria-hidden="true">
         <img src={iconSrc} alt="" />
       </div>
@@ -150,7 +285,7 @@ function ScheduleCard({ item, onComplete, isRemoving }: ScheduleCardProps) {
 
 const calcDaysRemaining = (isoDate: string) => {
   const msPerDay = 24 * 60 * 60 * 1000
-  const today = new Date()
+  const today = getBeijingNow()
   today.setHours(0, 0, 0, 0)
   const target = parseISODate(isoDate)
   target.setHours(0, 0, 0, 0)
@@ -159,38 +294,49 @@ const calcDaysRemaining = (isoDate: string) => {
 }
 
 function App() {
-  const [pets, setPets] = useState<PetTab[]>(initialPetTabs)
+  const [pets, setPets] = useState<PetProfile[]>(initialPetTabs)
   const [petSchedules, setPetSchedules] = useState<Record<string, ScheduleItem[]>>(initialSchedules)
   const [activePet, setActivePet] = useState<string>(initialPetTabs[0]?.id ?? '')
   const [modalMode, setModalMode] = useState<ModalMode>(null)
-  const today = clampDate(envDebugToday ? parseISODate(envDebugToday) : new Date())
+  const today = envDebugToday ? clampDate(parseISODate(envDebugToday)) : getBeijingToday()
   const todayInput = formatDateInput(today)
-  const maxScheduleDate = formatDateInput(new Date(today.getTime() + 14 * 24 * 60 * 60 * 1000))
   const calcFutureDate = (days: number) => {
     const base = new Date(today)
     base.setDate(base.getDate() + days)
-    return clampDate(base)
+    base.setHours(0, 0, 0, 0)
+    return base
   }
   const defaultDayOffset = 1
   const [selectedTemplateId, setSelectedTemplateId] = useState(scheduleTemplates[0].id)
-  const [selectedDayOffset, setSelectedDayOffset] = useState<number | typeof longTermOptionValue>(defaultDayOffset)
   const [formDate, setFormDate] = useState(() => formatDateInput(calcFutureDate(defaultDayOffset)))
   const [petNickname, setPetNickname] = useState('')
   const [isModalClosing, setModalClosing] = useState(false)
   const [removingTaskIds, setRemovingTaskIds] = useState<string[]>([])
   const [holderShift, setHolderShift] = useState(0)
   const [holderAnimated, setHolderAnimated] = useState(false)
-  const [historyModal, setHistoryModal] = useState<{ petId: string; templateId: string } | null>(null)
-  const [historyModalClosing, setHistoryModalClosing] = useState(false)
+  const [petCenterModal, setPetCenterModal] = useState<{
+    petId: string
+    templateId: string
+    nameInput: string
+    birthdayInput: string
+    activePanel: PetCenterPanel
+    genderInput: PetGender
+  } | null>(null)
+  const [petCenterClosing, setPetCenterClosing] = useState(false)
   const [hasPetExperience, setHasPetExperience] = useState(() => {
     if (typeof window === 'undefined') return false
     return window.localStorage.getItem(HAS_PET_FLAG) === 'true'
   })
-  const [petTipDismissed, setPetTipDismissed] = useState(() => {
-    if (typeof window === 'undefined') return false
-    return window.localStorage.getItem(PET_TIP_FLAG) === 'true'
-  })
   const [toast, setToast] = useState<{ message: string; type: 'info' | 'error' } | null>(null)
+  const [historyRecords, setHistoryRecords] = useState(initialHistoryRecords)
+  const [nextSchedulePrompt, setNextSchedulePrompt] = useState<{
+    petId: string
+    templateId: string
+    actionText: string
+    iconKey?: IconKey
+    petLabel: string
+  } | null>(null)
+  const [nextScheduleDate, setNextScheduleDate] = useState(todayInput)
   const scheduleItems = useMemo(() => petSchedules[activePet] ?? [], [activePet, petSchedules])
   const sortedGroups = useMemo(() => {
     const enriched = scheduleItems.map((item) => ({
@@ -216,9 +362,17 @@ function App() {
   const prevHolderTopRef = useRef<number | null>(null)
   const holderRafRef = useRef<number | null>(null)
   const longPressTimerRef = useRef<number | null>(null)
-  const historyCloseTimerRef = useRef<number | null>(null)
-  const petTipRef = useRef<HTMLDivElement | null>(null)
-  const shouldShowPetTip = !hasPetExperience && !petTipDismissed && pets.length === 0
+  const petCenterCloseTimerRef = useRef<number | null>(null)
+  const pointerPositionRef = useRef<{ x: number; y: number } | null>(null)
+  const [earlyPromptTask, setEarlyPromptTask] = useState<{ petId: string; task: ScheduleItem } | null>(null)
+  const [overduePromptTask, setOverduePromptTask] = useState<{ petId: string; task: ScheduleItem } | null>(null)
+  const [overduePromptDate, setOverduePromptDate] = useState(todayInput)
+  const [taskMenu, setTaskMenu] = useState<{
+    petId: string
+    task: ScheduleItem
+    position: { x: number; y: number }
+  } | null>(null)
+  const [taskMenuDate, setTaskMenuDate] = useState(todayInput)
 
   const clearModalTimer = () => {
     if (modalTimerRef.current) {
@@ -229,7 +383,6 @@ function App() {
 
   const resetModalForm = () => {
     setSelectedTemplateId(scheduleTemplates[0].id)
-    setSelectedDayOffset(defaultDayOffset)
     setFormDate(formatDateInput(calcFutureDate(defaultDayOffset)))
     setPetNickname('')
   }
@@ -245,34 +398,52 @@ function App() {
     }, 2200)
   }
 
-  const openHistoryModal = (petId: string) => {
-    if (historyCloseTimerRef.current) {
-      window.clearTimeout(historyCloseTimerRef.current)
-      historyCloseTimerRef.current = null
+  const openPetCenterModal = (petId: string) => {
+    if (petCenterCloseTimerRef.current) {
+      window.clearTimeout(petCenterCloseTimerRef.current)
+      petCenterCloseTimerRef.current = null
     }
-    setHistoryModalClosing(false)
-    setHistoryModal({ petId, templateId: scheduleTemplates[0].id })
+    const currentPet = pets.find((pet) => pet.id === petId)
+    setPetCenterClosing(false)
+    setPetCenterModal({
+      petId,
+      templateId: scheduleTemplates[0].id,
+      nameInput: currentPet?.label ?? '',
+      birthdayInput: currentPet?.birthdayISO ?? '',
+      genderInput: currentPet?.gender ?? 'unknown',
+      activePanel: 'info',
+    })
   }
 
-  const closeHistoryModal = () => {
-    if (!historyModal) return
-    setHistoryModalClosing(true)
-    if (historyCloseTimerRef.current) {
-      window.clearTimeout(historyCloseTimerRef.current)
+  const closePetCenterModal = () => {
+    if (!petCenterModal) return
+    setPetCenterClosing(true)
+    if (petCenterCloseTimerRef.current) {
+      window.clearTimeout(petCenterCloseTimerRef.current)
     }
-    historyCloseTimerRef.current = window.setTimeout(() => {
-      setHistoryModal(null)
-      setHistoryModalClosing(false)
-      historyCloseTimerRef.current = null
+    petCenterCloseTimerRef.current = window.setTimeout(() => {
+      setPetCenterModal(null)
+      setPetCenterClosing(false)
+      petCenterCloseTimerRef.current = null
     }, MODAL_ANIMATION_MS)
   }
 
-  const startLongPress = (petId: string) => {
+  const switchPetCenterPanel = (panel: PetCenterPanel) => {
+    setPetCenterModal((prev) => (prev ? { ...prev, activePanel: panel } : prev))
+  }
+
+  const startLongPress = (petId: string, task?: ScheduleItem) => {
     if (longPressTimerRef.current) {
       window.clearTimeout(longPressTimerRef.current)
     }
     longPressTimerRef.current = window.setTimeout(() => {
-      openHistoryModal(petId)
+      if (task) {
+        const position = pointerPositionRef.current ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 }
+        setTaskMenu({ petId, task, position })
+        setTaskMenuDate(task.remindDateISO)
+      } else {
+        openPetCenterModal(petId)
+      }
     }, LONG_PRESS_THRESHOLD_MS)
   }
 
@@ -281,6 +452,11 @@ function App() {
       window.clearTimeout(longPressTimerRef.current)
       longPressTimerRef.current = null
     }
+    pointerPositionRef.current = null
+  }
+
+  const closeTaskMenu = () => {
+    setTaskMenu(null)
   }
 
   const handlePetNicknameInput = (value: string) => {
@@ -321,29 +497,12 @@ function App() {
         holderRafRef.current = null
       }
       cancelLongPress()
-      if (historyCloseTimerRef.current) {
-        window.clearTimeout(historyCloseTimerRef.current)
-        historyCloseTimerRef.current = null
+      if (petCenterCloseTimerRef.current) {
+        window.clearTimeout(petCenterCloseTimerRef.current)
+        petCenterCloseTimerRef.current = null
       }
     }
   }, [])
-
-  useEffect(() => {
-    if (!shouldShowPetTip) {
-      return
-    }
-    const handlePointerDown = (event: PointerEvent) => {
-      if (petTipRef.current && petTipRef.current.contains(event.target as Node)) {
-        return
-      }
-      setPetTipDismissed(true)
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem(PET_TIP_FLAG, 'true')
-      }
-    }
-    document.addEventListener('pointerdown', handlePointerDown)
-    return () => document.removeEventListener('pointerdown', handlePointerDown)
-  }, [shouldShowPetTip])
 
 useLayoutEffect(() => {
   const node = emptyHolderRef.current
@@ -371,11 +530,67 @@ useLayoutEffect(() => {
   })
 }, [scheduleItems.length, activePet])
 
+  const shouldSuggestEarlyCompletion = useCallback((item: ScheduleItem) => {
+    if (!item.createdAtISO || item.muted) return false
+    const createdAt = parseISODate(item.createdAtISO)
+    createdAt.setHours(0, 0, 0, 0)
+    const target = parseISODate(item.remindDateISO)
+    target.setHours(0, 0, 0, 0)
+    const totalMs = target.getTime() - createdAt.getTime()
+    if (totalMs <= 0) return false
+    const now = getBeijingNow()
+    now.setHours(0, 0, 0, 0)
+    const elapsedMs = now.getTime() - createdAt.getTime()
+    if (elapsedMs < 0) return false
+    const ratio = elapsedMs / totalMs
+    return ratio < 0.75 && calcDaysRemaining(item.remindDateISO) > 7
+  }, [])
+
+  useEffect(() => {
+    if (overduePromptTask) return
+    if (!activePet) return
+    const list = petSchedules[activePet] ?? []
+    const candidate = list.find((item) => calcDaysRemaining(item.remindDateISO) < 0 && !item.muted)
+    if (candidate) {
+      setOverduePromptTask({ petId: activePet, task: candidate })
+      setOverduePromptDate(todayInput)
+    }
+  }, [activePet, petSchedules, overduePromptTask, todayInput])
+
   const handleSelectPet = (petId: string) => {
     setActivePet(petId)
   }
 
-  const handleCompleteTask = (petId: string, taskId: string) => {
+  const handleCompleteTask = (petId: string, taskId: string, options?: { ignoreEarlyCheck?: boolean }) => {
+    const currentList = petSchedules[petId] ?? []
+    const targetItem = currentList.find((item) => item.id === taskId)
+    if (!targetItem) return
+    if (!options?.ignoreEarlyCheck && shouldSuggestEarlyCompletion(targetItem)) {
+      setEarlyPromptTask({ petId, task: targetItem })
+      return
+    }
+    if (targetItem.templateId === BIRTHDAY_TEMPLATE_ID) {
+      const petProfile = pets.find((pet) => pet.id === petId)
+      if (petProfile?.birthdayISO) {
+        const reference = parseISODate(targetItem.remindDateISO)
+        reference.setFullYear(reference.getFullYear(), reference.getMonth(), reference.getDate())
+        reference.setHours(0, 0, 0, 0)
+        const nextBirthday = getNextBirthdayISO(petProfile.birthdayISO, reference)
+        if (nextBirthday) {
+          setPetSchedules((prev) => {
+            const list = prev[petId] ?? []
+            const updated = list.map((item) =>
+              item.id === taskId ? { ...item, remindDateISO: nextBirthday, createdAtISO: todayInput, muted: false } : item,
+            )
+            return { ...prev, [petId]: updated }
+          })
+          incrementPetAge(petId)
+          appendHistoryEntry(petId, targetItem.templateId, todayInput)
+          showToast('已为下次生日生成提醒', 'info')
+        }
+      }
+      return
+    }
     if (removingTaskIds.includes(taskId)) return
     setRemovingTaskIds((prev) => [...prev, taskId])
     const timerId = window.setTimeout(() => {
@@ -388,11 +603,28 @@ useLayoutEffect(() => {
       delete removalTimersRef.current[taskId]
     }, CARD_ANIMATION_MS)
     removalTimersRef.current[taskId] = timerId
+    appendHistoryEntry(petId, targetItem.templateId, todayInput)
+    if (targetItem.templateId && targetItem.templateId !== BIRTHDAY_TEMPLATE_ID) {
+      const template = scheduleTemplates.find((tpl) => tpl.id === targetItem.templateId)
+      const petLabel = pets.find((pet) => pet.id === petId)?.label ?? '小可爱'
+      if (template) {
+        setNextSchedulePrompt({
+          petId,
+          templateId: template.id,
+          actionText: `${template.verb}${petLabel}${template.action}`,
+          iconKey: template.iconKey,
+          petLabel,
+        })
+        setNextScheduleDate(
+          targetItem.remindDateISO > todayInput ? targetItem.remindDateISO : todayInput,
+        )
+      }
+    }
   }
 
   const handleAddPet = (nickname: string) => {
     const newId = `pet-${Date.now()}`
-    setPets((prev) => [...prev, { id: newId, label: nickname }])
+    setPets((prev) => [...prev, { id: newId, label: nickname, gender: 'unknown' }])
     setPetSchedules((prev) => ({ ...prev, [newId]: [] }))
     setActivePet(newId)
     if (!hasPetExperience) {
@@ -401,29 +633,163 @@ useLayoutEffect(() => {
         window.localStorage.setItem(HAS_PET_FLAG, 'true')
       }
     }
-    if (!petTipDismissed) {
-      setPetTipDismissed(true)
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem(PET_TIP_FLAG, 'true')
-      }
-    }
   }
 
-  const handleDayOptionChange = (value: string) => {
-    if (value === longTermOptionValue) {
-      setSelectedDayOffset(longTermOptionValue)
-      setFormDate(maxScheduleDate)
+  const ensureBirthdayReminder = useCallback((petId: string, petLabel: string, birthdayISO?: string) => {
+    if (!birthdayISO) return
+    const nextReminderISO = getNextBirthdayISO(birthdayISO)
+    if (!nextReminderISO) return
+    setPetSchedules((prev) => {
+      const currentList = prev[petId] ?? []
+      const reminderTitle = `${petLabel}的生日提醒`
+      const existingIndex = currentList.findIndex((item) => item.templateId === BIRTHDAY_TEMPLATE_ID)
+      if (existingIndex === -1) {
+        const newItem: ScheduleItem = {
+          id: `${BIRTHDAY_TEMPLATE_ID}-${petId}`,
+          title: reminderTitle,
+          remindDateISO: nextReminderISO,
+          createdAtISO: todayInput,
+          templateId: BIRTHDAY_TEMPLATE_ID,
+          iconKey: 'play',
+          muted: false,
+        }
+        return {
+          ...prev,
+          [petId]: [...currentList, newItem],
+        }
+      }
+      const existing = currentList[existingIndex]
+      if (existing.remindDateISO === nextReminderISO && existing.title === reminderTitle) {
+        return prev
+      }
+      const nextList = [...currentList]
+      nextList[existingIndex] = {
+        ...existing,
+        title: reminderTitle,
+        remindDateISO: nextReminderISO,
+        createdAtISO: todayInput,
+        muted: false,
+      }
+      return { ...prev, [petId]: nextList }
+    })
+  }, [todayInput])
+
+  const incrementPetAge = (petId: string) => {
+    setPets((prev) =>
+      prev.map((pet) => {
+        if (pet.id !== petId) return pet
+        const baseline =
+          pet.ageYears ??
+          (pet.birthdayISO ? computeInitialAgeYears(pet.birthdayISO) : 0)
+        return { ...pet, ageYears: baseline + 1 }
+      }),
+    )
+  }
+
+  const appendHistoryEntry = useCallback(
+    (petId: string, templateId?: string, dateISO?: string) => {
+      if (!templateId) return
+      const stamp = dateISO ?? todayInput
+      setHistoryRecords((prev) => {
+        const petHistory = prev[petId] ?? {}
+        const templateHistory = petHistory[templateId] ?? []
+        return {
+          ...prev,
+          [petId]: {
+            ...petHistory,
+            [templateId]: [stamp, ...templateHistory],
+          },
+        }
+      })
+    },
+    [todayInput],
+  )
+
+  const syncPetScheduleTitles = (petId: string, petLabel: string) => {
+    setPetSchedules((prev) => {
+      const current = prev[petId]
+      if (!current) return prev
+      const nextList = current.map((item) => {
+        if (!item.templateId) return item
+        const nextTitle = buildScheduleTitle(item.templateId, petLabel, item.title)
+        if (nextTitle === item.title) return item
+        return { ...item, title: nextTitle }
+      })
+      return { ...prev, [petId]: nextList }
+    })
+  }
+
+  const handleSavePetProfile = () => {
+    if (!petCenterModal) return
+    const rawName = petCenterModal.nameInput
+    const trimmedName = rawName.trim()
+    if (!trimmedName) {
+      showToast('请输入宠物昵称')
       return
     }
-    const offset = Number(value)
-    const target = calcFutureDate(offset)
-    setSelectedDayOffset(offset)
-    setFormDate(formatDateInput(target))
-  }
-
-  const handleDateChange = (value: string) => {
-    setFormDate(value)
-    setSelectedDayOffset(longTermOptionValue)
+    if (trimmedName.length > PET_NAME_MAX) {
+      showToast(`宠物昵称最多${PET_NAME_MAX}个字符`, 'info')
+      return
+    }
+    if (/\s/.test(rawName)) {
+      showToast('宠物昵称不能包含空格', 'info')
+      return
+    }
+    if (pets.some((pet) => pet.label === trimmedName && pet.id !== petCenterModal.petId)) {
+      showToast('已经存在相同的宠物名称', 'info')
+      return
+    }
+    const petRecord = pets.find((pet) => pet.id === petCenterModal.petId)
+    if (!petRecord) return
+    const nameChanged = petRecord.label !== trimmedName
+    const birthdayChanged = (petRecord.birthdayISO ?? '') !== (petCenterModal.birthdayInput ?? '')
+    const genderChanged = (petRecord.gender ?? 'unknown') !== petCenterModal.genderInput
+    if (!nameChanged && !birthdayChanged && !genderChanged) {
+      showToast('信息未发生变化', 'info')
+      return
+    }
+    const birthdayInput = petCenterModal.birthdayInput
+    if (birthdayInput) {
+      const birthdayDate = parseISODate(birthdayInput)
+      const todayDate = parseISODate(todayInput)
+      birthdayDate.setHours(0, 0, 0, 0)
+      todayDate.setHours(0, 0, 0, 0)
+      if (birthdayDate > todayDate) {
+        showToast('生日不能设置在未来', 'info')
+        return
+      }
+    }
+    setPets((prev) =>
+      prev.map((pet) => {
+        if (pet.id !== petCenterModal.petId) return pet
+        const next: PetProfile = { ...pet, label: trimmedName, gender: petCenterModal.genderInput }
+        if (birthdayInput) {
+          next.birthdayISO = birthdayInput
+          next.ageYears = computeInitialAgeYears(birthdayInput)
+        } else {
+          next.birthdayISO = undefined
+          next.ageYears = undefined
+        }
+        return next
+      }),
+    )
+    if (nameChanged) {
+      syncPetScheduleTitles(petCenterModal.petId, trimmedName)
+    }
+    if (birthdayInput) {
+      ensureBirthdayReminder(petCenterModal.petId, trimmedName, birthdayInput)
+    }
+    setPetCenterModal((prev) =>
+      prev
+        ? {
+            ...prev,
+            nameInput: trimmedName,
+            birthdayInput: petCenterModal.birthdayInput,
+            genderInput: petCenterModal.genderInput,
+          }
+        : prev,
+    )
+    showToast('宠物信息已保存', 'info')
   }
 
   const handleModalSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -435,24 +801,22 @@ useLayoutEffect(() => {
       }
       const template = scheduleTemplates.find((item) => item.id === selectedTemplateId) ?? scheduleTemplates[0]
       const petLabel = pets.find((pet) => pet.id === activePet)?.label ?? '小可爱'
-      const targetDate =
-        selectedDayOffset === longTermOptionValue ? parseISODate(formDate) : calcFutureDate(selectedDayOffset)
+      const targetDate = parseISODate(formDate)
       const targetIso = formatDateInput(targetDate)
       const actionText = `${template.verb}${petLabel}${template.action}`
-       const currentList = petSchedules[activePet] ?? []
-       const hasDuplicate = currentList.some(
-         (item) => item.title === actionText && item.remindDateISO === targetIso,
-       )
-       if (hasDuplicate) {
-         showToast('已经存在相同的日程', 'info')
-         return
-       }
+      const currentList = petSchedules[activePet] ?? []
+      const hasDuplicate = currentList.some((item) => item.title === actionText && item.remindDateISO === targetIso)
+      if (hasDuplicate) {
+        showToast('已经存在相同的日程', 'info')
+        return
+      }
       const newItem: ScheduleItem = {
         id: `task-${Date.now()}`,
         title: actionText,
         remindDateISO: targetIso,
         templateId: template.id,
         iconKey: template.iconKey,
+        createdAtISO: todayInput,
       }
       setPetSchedules((prev) => {
         const current = prev[activePet] ?? []
@@ -471,6 +835,10 @@ useLayoutEffect(() => {
         showToast(`宠物昵称最多${PET_NAME_MAX}个字符`, 'info')
         return
       }
+      if (/\s/.test(petNickname)) {
+        showToast('宠物昵称不能包含空格', 'info')
+        return
+      }
       if (pets.some((pet) => pet.label === trimmedName)) {
         showToast('已经存在相同的宠物名称', 'info')
         return
@@ -478,6 +846,121 @@ useLayoutEffect(() => {
       handleAddPet(trimmedName)
     }
     closeModalWithAnimation()
+  }
+
+  const handleEarlyPromptComplete = () => {
+    if (!earlyPromptTask) return
+    handleCompleteTask(earlyPromptTask.petId, earlyPromptTask.task.id, { ignoreEarlyCheck: true })
+    setEarlyPromptTask(null)
+  }
+
+  const handleEarlyPromptSkip = () => {
+    if (!earlyPromptTask) return
+    setEarlyPromptTask(null)
+  }
+
+  const handlePostponeOverdue = () => {
+    if (!overduePromptTask) return
+    if (!overduePromptDate) {
+      showToast('请选择延期日期')
+      return
+    }
+    setPetSchedules((prev) => {
+      const current = prev[overduePromptTask.petId] ?? []
+      const nextList = current.map((item) =>
+        item.id === overduePromptTask.task.id
+          ? { ...item, remindDateISO: overduePromptDate, createdAtISO: todayInput, muted: false }
+          : item,
+      )
+      return { ...prev, [overduePromptTask.petId]: nextList }
+    })
+    setOverduePromptTask(null)
+  }
+
+  const handleMuteOverdue = () => {
+    if (!overduePromptTask) return
+    setPetSchedules((prev) => {
+      const current = prev[overduePromptTask.petId] ?? []
+      const nextList = current.map((item) =>
+        item.id === overduePromptTask.task.id ? { ...item, muted: true } : item,
+      )
+      return { ...prev, [overduePromptTask.petId]: nextList }
+    })
+    setOverduePromptTask(null)
+  }
+
+  const handleSkipNextSchedule = () => {
+    setNextSchedulePrompt(null)
+    setNextScheduleDate(todayInput)
+  }
+
+  const handleConfirmNextSchedule = () => {
+    if (!nextSchedulePrompt) return
+    if (!nextScheduleDate) {
+      showToast('请选择下次时间')
+      return
+    }
+    const targetDate = parseISODate(nextScheduleDate)
+    targetDate.setHours(0, 0, 0, 0)
+    const todayDate = parseISODate(todayInput)
+    todayDate.setHours(0, 0, 0, 0)
+    if (targetDate < todayDate) {
+      showToast('请选择今天之后的日期', 'info')
+      return
+    }
+    const currentList = petSchedules[nextSchedulePrompt.petId] ?? []
+    const duplicate = currentList.some(
+      (item) => item.title === nextSchedulePrompt.actionText && item.remindDateISO === nextScheduleDate,
+    )
+    if (duplicate) {
+      showToast('已经存在相同的日程', 'info')
+      return
+    }
+    const newItem: ScheduleItem = {
+      id: `task-${Date.now()}`,
+      title: nextSchedulePrompt.actionText,
+      remindDateISO: nextScheduleDate,
+      templateId: nextSchedulePrompt.templateId,
+      iconKey: nextSchedulePrompt.iconKey,
+      createdAtISO: todayInput,
+    }
+    setPetSchedules((prev) => {
+      const current = prev[nextSchedulePrompt.petId] ?? []
+      return {
+        ...prev,
+        [nextSchedulePrompt.petId]: [...current, newItem],
+      }
+    })
+    showToast('已预约下一次', 'info')
+    handleSkipNextSchedule()
+  }
+
+  const handleTaskMenuDelete = () => {
+    if (!taskMenu) return
+    setPetSchedules((prev) => {
+      const next = { ...prev }
+      next[taskMenu.petId] = (prev[taskMenu.petId] ?? []).filter((item) => item.id !== taskMenu.task.id)
+      return next
+    })
+    closeTaskMenu()
+  }
+
+  const handleTaskMenuReschedule = () => {
+    if (!taskMenu) return
+    const targetDate = parseISODate(taskMenuDate)
+    const today = getBeijingToday()
+    if (targetDate < today) {
+      showToast('请选择今天之后的日期', 'info')
+      return
+    }
+    setPetSchedules((prev) => {
+      const current = prev[taskMenu.petId] ?? []
+      const nextList = current.map((item) =>
+        item.id === taskMenu.task.id ? { ...item, remindDateISO: taskMenuDate, createdAtISO: todayInput } : item,
+      )
+      return { ...prev, [taskMenu.petId]: nextList }
+    })
+    closeTaskMenu()
   }
 
   const emptyHolderClassNames = ['empty-state-holder']
@@ -494,14 +977,24 @@ useLayoutEffect(() => {
           transform: `translateY(${holderShift}px)`,
           transition: holderAnimated ? `transform ${motionDuration} cubic-bezier(0.25, 0.85, 0.25, 1)` : 'none',
         }
+  const handleCardPointerDown = (event: ReactPointerEvent<HTMLElement>, item: ScheduleItem) => {
+    if ((event.target as HTMLElement).closest('.schedule-card__action')) return
+    pointerPositionRef.current = { x: event.clientX, y: event.clientY }
+    startLongPress(activePet, item)
+  }
+
   const renderScheduleCard = (item: ScheduleItem) => (
     <ScheduleCard
       key={item.id}
       item={item}
       isRemoving={removingTaskIds.includes(item.id)}
       onComplete={() => handleCompleteTask(activePet, item.id)}
+      onLongPress={(event) => handleCardPointerDown(event, item)}
+      onPressCancel={cancelLongPress}
     />
   )
+  const currentPetProfile =
+    petCenterModal ? pets.find((pet) => pet.id === petCenterModal.petId) ?? null : null
   return (
     <div className="app-shell">
       <div className="device-frame">
@@ -566,18 +1059,6 @@ useLayoutEffect(() => {
               <span className="pet-tab__indicator" aria-hidden="true" />
               <span className="pet-tab__add-symbol">+</span>
             </button>
-            {shouldShowPetTip && (
-              <div
-                ref={petTipRef}
-                className="pet-tip"
-                onPointerDown={(event) => event.stopPropagation()}
-                role="status"
-                aria-live="polite"
-              >
-                <p className="pet-tip__text">新增宠物后即可开始记录日程</p>
-                <span className="pet-tip__arrow" aria-hidden="true" />
-              </div>
-            )}
           </div>
 
           <div className={`schedule-list ${scheduleItems.length === 0 ? 'schedule-list--empty' : ''}`} role="list">
@@ -618,58 +1099,270 @@ useLayoutEffect(() => {
         </div>
       )}
 
-      {historyModal && (
+      {petCenterModal && (
         <div
-          className={`history-overlay ${historyModalClosing ? 'history-overlay--exit' : 'history-overlay--enter'}`}
-          aria-hidden={!historyModal}
+          className={`history-overlay ${petCenterClosing ? 'history-overlay--exit' : 'history-overlay--enter'}`}
+          aria-hidden={!petCenterModal}
         >
           <div
-            className={`history-dialog ${historyModalClosing ? 'history-dialog--exit' : 'history-dialog--enter'}`}
+            className={`history-dialog ${petCenterClosing ? 'history-dialog--exit' : 'history-dialog--enter'}`}
             role="dialog"
             aria-modal="true"
           >
             <header className="history-dialog__header">
               <p className="history-dialog__title">
-                {pets.find((pet) => pet.id === historyModal.petId)?.label ?? '宠物'} · 历程
+                {currentPetProfile?.label ?? '宠物'} · 综合信息
               </p>
-              <button className="history-dialog__close pressable" type="button" onClick={closeHistoryModal}>
+              <button className="history-dialog__close pressable" type="button" onClick={closePetCenterModal}>
                 ×
               </button>
             </header>
             <div className="history-dialog__body">
-              <label className="history-field">
-                <span>选择日程</span>
-                <select
-                  value={historyModal.templateId}
-                  onChange={(event) =>
-                    setHistoryModal((prev) => (prev ? { ...prev, templateId: event.target.value } : prev))
-                  }
-                >
-                  {scheduleTemplates.map((template) => (
-                    <option key={template.id} value={template.id}>
-                      {template.label}
-                    </option>
+              <div className="pet-center">
+                <div className="pet-center__menu" role="tablist" aria-orientation="vertical">
+                  {petCenterPanels.map((panel) => (
+                    <button
+                      key={panel.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={petCenterModal.activePanel === panel.id}
+                      className={`pet-center__menu-btn ${
+                        petCenterModal.activePanel === panel.id ? 'pet-center__menu-btn--active' : ''
+                      }`}
+                      onClick={() => switchPetCenterPanel(panel.id)}
+                    >
+                      {panel.label}
+                    </button>
                   ))}
-                </select>
+                </div>
+                <div className="pet-center__content">
+                  {petCenterModal.activePanel === 'info' ? (
+                    <div className="pet-center__section">
+                      <p className="pet-age-line">
+                        当前年龄：
+                        {currentPetProfile?.birthdayISO
+                          ? currentPetProfile?.ageYears != null
+                            ? `${currentPetProfile.ageYears}岁`
+                            : '未设置'
+                          : '生日未设置'}
+                      </p>
+                      <label className="history-field">
+                        <span>宠物昵称</span>
+                        <input
+                          type="text"
+                          value={petCenterModal.nameInput}
+                          maxLength={PET_NAME_MAX}
+                          onChange={(event) =>
+                            setPetCenterModal((prev) => (prev ? { ...prev, nameInput: event.target.value } : prev))
+                          }
+                        />
+                      </label>
+                      <label className="history-field">
+                        <span>生日（用于自动提醒）</span>
+                        <input
+                          type="date"
+                          value={petCenterModal.birthdayInput}
+                          onChange={(event) =>
+                            setPetCenterModal((prev) => (prev ? { ...prev, birthdayInput: event.target.value } : prev))
+                          }
+                        />
+                      </label>
+                      {petCenterModal.birthdayInput && (
+                        <p className="pet-age-hint">生日：{petCenterModal.birthdayInput}</p>
+                      )}
+                      <label className="history-field">
+                        <span>性别</span>
+                        <select
+                          value={petCenterModal.genderInput}
+                          onChange={(event) =>
+                            setPetCenterModal((prev) =>
+                              prev ? { ...prev, genderInput: event.target.value as PetGender } : prev,
+                            )
+                          }
+                        >
+                          {genderOptions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="history-actions">
+                        <button className="composer-primary pressable" type="button" onClick={handleSavePetProfile}>
+                          保存信息
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="pet-center__section">
+                      <label className="history-field">
+                        <span>选择日程</span>
+                        <select
+                          value={petCenterModal.templateId}
+                          onChange={(event) =>
+                            setPetCenterModal((prev) => (prev ? { ...prev, templateId: event.target.value } : prev))
+                          }
+                        >
+                          {scheduleTemplates.map((template) => (
+                            <option key={template.id} value={template.id}>
+                              {template.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {(() => {
+                        const petHistory = historyRecords[petCenterModal.petId] ?? {}
+                        const entries = petHistory[petCenterModal.templateId] ?? []
+                        return (
+                          <div className="history-list">
+                            {entries.length > 0 ? (
+                              entries.map((date, index) => (
+                                <div key={`${date}-${index}`} className="history-list__item">
+                                  <span>第{index + 1}次</span>
+                                  <strong>{formatDisplayDate(parseISODate(date))}</strong>
+                                </div>
+                              ))
+                            ) : (
+                              <p className="history-empty">暂无记录</p>
+                            )}
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {earlyPromptTask && (
+        <div className="composer-overlay composer-overlay--enter" role="dialog" aria-modal="true">
+          <div className="composer-dialog composer-dialog--enter">
+            <header className="composer-dialog__header">
+              <p className="composer-dialog__title">提前完成提醒</p>
+              <button className="composer-dialog__close pressable" type="button" onClick={handleEarlyPromptSkip}>
+                ×
+              </button>
+            </header>
+            <div className="composer-form">
+              <p className="prompt-text">
+                {pets.find((pet) => pet.id === earlyPromptTask.petId)?.label ?? '宠物'} 的「
+                {earlyPromptTask.task.title}」还有 {calcDaysRemaining(earlyPromptTask.task.remindDateISO)} 天，
+                是否提前完成？
+              </p>
+              <div className="composer-actions composer-actions--spread">
+                <button className="composer-secondary pressable" type="button" onClick={handleEarlyPromptSkip}>
+                  否
+                </button>
+                <button className="composer-primary pressable" type="button" onClick={handleEarlyPromptComplete}>
+                  是
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {overduePromptTask && (
+        <div className="composer-overlay composer-overlay--enter" role="dialog" aria-modal="true">
+          <div className="composer-dialog composer-dialog--enter">
+            <header className="composer-dialog__header">
+              <p className="composer-dialog__title">逾期提醒</p>
+              <button className="composer-dialog__close pressable" type="button" onClick={handleMuteOverdue}>
+                ×
+              </button>
+            </header>
+            <div className="composer-form">
+              <p className="prompt-text">
+                {pets.find((pet) => pet.id === overduePromptTask.petId)?.label ?? '宠物'} 的「
+                {overduePromptTask.task.title}」已逾期 {Math.abs(calcDaysRemaining(overduePromptTask.task.remindDateISO))} 天。
+              </p>
+              <label className="composer-field">
+                <span>延期至</span>
+                <input
+                  type="date"
+                  min={todayInput}
+                  value={overduePromptDate}
+                  onChange={(event) => setOverduePromptDate(event.target.value)}
+                />
               </label>
-              {(() => {
-                const petHistory = historyRecords[historyModal.petId] ?? {}
-                const entries = petHistory[historyModal.templateId] ?? []
-                return (
-                  <div className="history-list">
-                    {entries.length > 0 ? (
-                      entries.map((date, index) => (
-                        <div key={date} className="history-list__item">
-                          <span>第{index + 1}次</span>
-                          <strong>{formatDisplayDate(parseISODate(date))}</strong>
-                        </div>
-                      ))
-                    ) : (
-                      <p className="history-empty">暂无记录</p>
-                    )}
-                  </div>
-                )
-              })()}
+              <div className="composer-actions composer-actions--spread">
+                <button className="composer-secondary pressable" type="button" onClick={handleMuteOverdue}>
+                  不再提醒
+                </button>
+                <button className="composer-primary pressable" type="button" onClick={handlePostponeOverdue}>
+                  延期
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {taskMenu && (
+        <div className="context-menu-overlay" onClick={closeTaskMenu}>
+          <div
+            className="context-menu"
+            style={{ top: `${taskMenu.position.y}px`, left: `${taskMenu.position.x}px` }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <p className="context-menu__title">{taskMenu.task.title}</p>
+            <label className="context-menu__field">
+              <span>提醒日期</span>
+              <input
+                type="date"
+                min={todayInput}
+                value={taskMenuDate}
+                onChange={(event) => setTaskMenuDate(event.target.value)}
+              />
+            </label>
+            <div className="context-menu__actions">
+              <button className="context-menu__btn" type="button" onClick={handleTaskMenuReschedule}>
+                保存日期
+              </button>
+              <button className="context-menu__btn context-menu__btn--danger" type="button" onClick={handleTaskMenuDelete}>
+                删除
+              </button>
+              <button className="context-menu__btn" type="button" onClick={closeTaskMenu}>
+                转发
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {nextSchedulePrompt && (
+        <div className="composer-overlay composer-overlay--enter" role="dialog" aria-modal="true">
+          <div className="composer-dialog composer-dialog--enter">
+            <header className="composer-dialog__header">
+              <p className="composer-dialog__title">预约下一次</p>
+              <button className="composer-dialog__close pressable" type="button" onClick={handleSkipNextSchedule}>
+                ×
+              </button>
+            </header>
+            <div className="composer-form">
+              <p className="prompt-text">
+                {nextSchedulePrompt.petLabel} 的「{nextSchedulePrompt.actionText}」已完成，是否直接安排下一次提醒？
+              </p>
+              <label className="composer-field">
+                <span>下次提醒日期</span>
+                <input
+                  type="date"
+                  min={todayInput}
+                  value={nextScheduleDate}
+                  onChange={(event) => setNextScheduleDate(event.target.value)}
+                />
+              </label>
+              <div className="composer-actions composer-actions--spread">
+                <button className="composer-secondary pressable" type="button" onClick={handleSkipNextSchedule}>
+                  暂不安排
+                </button>
+                <button className="composer-primary pressable" type="button" onClick={handleConfirmNextSchedule}>
+                  预约
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -706,32 +1399,15 @@ useLayoutEffect(() => {
                     </select>
                   </label>
                   <label className="composer-field">
-                    <span>几天后提醒</span>
-                    <select
-                      value={selectedDayOffset === longTermOptionValue ? longTermOptionValue : String(selectedDayOffset)}
-                      onChange={(event) => handleDayOptionChange(event.target.value)}
-                    >
-                      {dayOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                      <option value={longTermOptionValue}>更久</option>
-                    </select>
+                    <span>提醒日期</span>
+                    <input
+                      type="date"
+                      min={todayInput}
+                      value={formDate}
+                      onChange={(event) => setFormDate(event.target.value)}
+                      required
+                    />
                   </label>
-                  {selectedDayOffset === longTermOptionValue && (
-                    <label className="composer-field">
-                      <span>选择日期（最多两周）</span>
-                      <input
-                        type="date"
-                        min={todayInput}
-                        max={maxScheduleDate}
-                        value={formDate}
-                        onChange={(event) => handleDateChange(event.target.value)}
-                        required
-                      />
-                    </label>
-                  )}
                 </>
               ) : (
                 <label className="composer-field">
@@ -742,7 +1418,6 @@ useLayoutEffect(() => {
                     value={petNickname}
                     maxLength={PET_NAME_MAX}
                     onChange={(event) => handlePetNicknameInput(event.target.value)}
-                    required
                   />
                 </label>
               )}

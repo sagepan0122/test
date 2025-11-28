@@ -615,7 +615,7 @@
 }
 
 .history-dialog {
-  width: min(360px, 90%);
+  width: min(520px, 94vw);
   height: min(420px, 80vh);
   background: #fffaf0;
   border-radius: 20px;
@@ -658,12 +658,68 @@
 
 .history-dialog__body {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
+  flex-direction: row;
+  gap: 16px;
   flex: 1;
   min-height: 0;
+  overflow: hidden;
+}
+
+.pet-center {
+  display: flex;
+  flex: 1;
+  gap: 16px;
+  min-height: 0;
+}
+
+.pet-center__menu {
+  width: 108px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 16px;
+  background: #fff2dc;
+  border: 1px solid rgba(174, 126, 58, 0.25);
+}
+
+.pet-center__menu-btn {
+  border: none;
+  border-radius: 12px;
+  padding: 10px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  color: #8a6131;
+  text-align: left;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.pet-center__menu-btn--active {
+  background: #ffca7b;
+  color: #3a1f05;
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.08);
+}
+
+.pet-center__content {
+  flex: 1;
+  min-width: 0;
+  border-radius: 16px;
+  padding: 12px 16px;
+  background: #fffdf6;
+  border: 1px solid rgba(174, 126, 58, 0.2);
   overflow-y: auto;
-  padding-right: 4px;
+}
+
+.pet-center__section {
+  padding-bottom: 12px;
+  border-bottom: 1px dashed rgba(0, 0, 0, 0.08);
+}
+
+.pet-center__section:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
 }
 
 .history-field {
@@ -682,6 +738,34 @@
   font-size: 14px;
   background: #fffdf6;
   box-shadow: inset 0 -2px 0 rgba(255, 255, 255, 0.4);
+}
+
+.history-field input {
+  border-radius: 10px;
+  border: 1px solid rgba(175, 132, 64, 0.35);
+  padding: 8px 10px;
+  font-size: 14px;
+  background: #fffdf6;
+}
+
+.pet-age-line {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: #4a2d10;
+  font-weight: 600;
+}
+
+.pet-age-hint {
+  margin: -6px 0 8px;
+  font-size: 12px;
+  color: rgba(58, 36, 14, 0.85);
+}
+
+.history-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
 .history-list {
@@ -804,6 +888,11 @@
   justify-content: flex-end;
 }
 
+.composer-actions--spread {
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .composer-primary {
   border-radius: 10px;
   padding: 10px 18px;
@@ -816,6 +905,111 @@
   background: #e8a750;
   color: #272727;
   font-weight: 600;
+}
+
+.context-menu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: transparent;
+}
+
+.context-menu {
+  position: absolute;
+  background: #fff9ef;
+  border-radius: 16px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  padding: 14px 16px;
+  min-width: 200px;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.context-menu__title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #4a2d10;
+  font-weight: 600;
+}
+
+.context-menu__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: #67553a;
+  margin-bottom: 10px;
+}
+
+.context-menu__field input {
+  border-radius: 8px;
+  border: 1px solid rgba(175, 132, 64, 0.35);
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.context-menu__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.context-menu__btn {
+  border: none;
+  background: #e8a750;
+  color: #272727;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.context-menu__btn--danger {
+  background: #f4775f;
+  color: #fff;
+}
+
+.composer-secondary {
+  border-radius: 10px;
+  padding: 10px 18px;
+  font-size: 14px;
+  border: 1px solid rgba(39, 39, 39, 0.4);
+  background: rgba(255, 255, 255, 0.6);
+  color: #5c4527;
+  cursor: pointer;
+}
+
+.prompt-text {
+  margin: 0;
+  font-size: 14px;
+  color: #5c4527;
+  line-height: 1.5;
+}
+
+@media (max-width: 420px) {
+  .history-dialog {
+    width: min(370px, 94vw);
+    height: min(520px, 85vh);
+  }
+
+  .history-dialog__body {
+    flex-direction: column;
+  }
+
+  .pet-center {
+    flex-direction: column;
+  }
+
+  .pet-center__menu {
+    width: 100%;
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .pet-center__menu-btn {
+    flex: 1;
+    text-align: center;
+  }
 }
 
 
